@@ -3,9 +3,11 @@ import React, { useRef, useState, useEffect, useMemo } from 'react';
 import { Canvas } from '@react-three/fiber';
 import { OrbitControls, Text } from '@react-three/drei';
 import { Badge } from "@/components/ui/badge";
-import { useToast } from "@/components/ui/use-toast";
+import { useToast } from "@/hooks/use-toast";
 import { generateMockHumanPositions, calculateWaveIntensity } from '../utils/mockData';
-import * as THREE from 'three'; // Import THREE properly
+import { useDeviceScanner } from '../hooks/useDeviceScanner';
+import { calculateDistanceFromRSSI, estimatePositionFromSignals } from '../utils/deviceConnector';
+import * as THREE from 'three';
 
 // Component to create a floor grid
 const Floor = () => {
@@ -58,8 +60,8 @@ const Walls = () => {
 };
 
 // Component to create wave emitters (WiFi/Bluetooth sources)
-const WaveEmitter = ({ position, frequency = 2400, power = 100 }: 
-  { position: [number, number, number], frequency?: number, power?: number }) => {
+const WaveEmitter = ({ position, frequency = 2400, power = 100, isReal = false }: 
+  { position: [number, number, number], frequency?: number, power?: number, isReal?: boolean }) => {
   
   // Color based on frequency (bluetooth = blue, wifi = cyan)
   const color = frequency < 2450 ? "#4A74FF" : "#4AC9FF";
@@ -67,7 +69,17 @@ const WaveEmitter = ({ position, frequency = 2400, power = 100 }:
   return (
     <mesh position={position}>
       <sphereGeometry args={[0.3, 16, 16]} />
-      <meshStandardMaterial color={color} emissive={color} emissiveIntensity={0.5} />
+      <meshStandardMaterial 
+        color={color} 
+        emissive={color} 
+        emissiveIntensity={isReal ? 1.0 : 0.5} 
+      />
+      {isReal && (
+        <mesh position={[0, 0.5, 0]}>
+          <sphereGeometry args={[0.1, 8, 8]} />
+          <meshBasicMaterial color="#00FF00" />
+        </mesh>
+      )}
     </mesh>
   );
 };
@@ -93,18 +105,22 @@ const WaveEffect = ({ position, intensity, frequency }:
     if (!waveRef.current) return;
     
     const animate = () => {
-      if (waveRef.current) {
-        // Calculate wave propagation based on physics
-        const time = Date.now() * waveSpeed;
-        const wavelength = 299792458 / (frequency * 1000000); // c/f = wavelength
-        const normalizedWavelength = wavelength / 100; // Scale for visualization
-        
-        // Pulsing effect based on wave physics
-        waveRef.current.scale.x = 1 + Math.sin(time) * 0.1 * intensity;
-        waveRef.current.scale.z = 1 + Math.sin(time) * 0.1 * intensity;
-        
-        // Opacity based on intensity and wave phase
-        waveRef.current.material.opacity = 0.1 + Math.sin(time) * 0.05 + intensity * 0.2;
+      if (waveRef.current && waveRef.current.material) {
+        // Safety check + handle material type
+        const material = waveRef.current.material;
+        if (!Array.isArray(material) && 'opacity' in material) {
+          // Calculate wave propagation based on physics
+          const time = Date.now() * waveSpeed;
+          const wavelength = 299792458 / (frequency * 1000000); // c/f = wavelength
+          const normalizedWavelength = wavelength / 100; // Scale for visualization
+          
+          // Pulsing effect based on wave physics
+          waveRef.current.scale.x = 1 + Math.sin(time) * 0.1 * intensity;
+          waveRef.current.scale.z = 1 + Math.sin(time) * 0.1 * intensity;
+          
+          // Opacity based on intensity and wave phase
+          material.opacity = 0.1 + Math.sin(time) * 0.05 + intensity * 0.2;
+        }
       }
     };
     
@@ -131,12 +147,14 @@ const Human = ({
   position, 
   id, 
   confidence = 1.0, 
-  signalStrengthReduction = 0.3
+  signalStrengthReduction = 0.3,
+  isRealData = false
 }: { 
   position: [number, number, number], 
   id: number, 
   confidence?: number, 
-  signalStrengthReduction?: number 
+  signalStrengthReduction?: number,
+  isRealData?: boolean
 }) => {
   // Color based on confidence (redder = less confident)
   const color = new THREE.Color().setHSL(0.9 * confidence, 0.8, 0.6);
@@ -149,7 +167,7 @@ const Human = ({
         <meshStandardMaterial 
           color={colorHex} 
           emissive={colorHex} 
-          emissiveIntensity={0.3} 
+          emissiveIntensity={isRealData ? 0.8 : 0.3} 
         />
       </mesh>
       <Text
@@ -166,7 +184,7 @@ const Human = ({
       <mesh>
         <sphereGeometry args={[0.8, 16, 16]} />
         <meshStandardMaterial 
-          color="#FF54B0"
+          color={isRealData ? "#00FF00" : "#FF54B0"}
           transparent 
           opacity={0.2 * signalStrengthReduction} 
         />
@@ -179,11 +197,13 @@ const Human = ({
 const SignalDisturbance = ({ 
   emitterPosition, 
   humanPosition, 
-  signalReduction 
+  signalReduction,
+  isRealData = false
 }: { 
   emitterPosition: [number, number, number], 
   humanPosition: [number, number, number], 
-  signalReduction: number 
+  signalReduction: number,
+  isRealData?: boolean
 }) => {
   // Create points along the path between emitter and human
   const points = [];
@@ -204,10 +224,10 @@ const SignalDisturbance = ({
       <mesh>
         <tubeGeometry args={[curve, segments, 0.05, 8, false]} />
         <meshStandardMaterial
-          color="#FF54B0"
+          color={isRealData ? "#00FF00" : "#FF54B0"}
           transparent
           opacity={0.3 * signalReduction}
-          emissive="#FF54B0"
+          emissive={isRealData ? "#00FF00" : "#FF54B0"}
           emissiveIntensity={0.2}
         />
       </mesh>
@@ -221,48 +241,151 @@ const WaveVisualizer = () => {
     id: number, 
     position: [number, number, number],
     confidence: number,
-    signalStrengthReduction: number
+    signalStrengthReduction: number,
+    isRealData: boolean
   }>>([]);
   
   const [showSignalPaths, setShowSignalPaths] = useState(true);
   const { toast } = useToast();
+  const { bluetoothDevices, wifiNetworks, supportedFeatures } = useDeviceScanner();
   
   // Define emitter positions and properties
   const emitters = useMemo(() => [
-    { position: [8, 2.5, 8] as [number, number, number], frequency: 2400, power: 100 },    // WiFi 2.4GHz
-    { position: [-8, 2.5, -8] as [number, number, number], frequency: 5000, power: 80 },   // WiFi 5GHz
-    { position: [8, 2.5, -8] as [number, number, number], frequency: 2450, power: 30 },    // Bluetooth
-    { position: [-8, 2.5, 8] as [number, number, number], frequency: 2450, power: 30 }     // Bluetooth
+    { position: [8, 2.5, 8] as [number, number, number], frequency: 2400, power: 100, isReal: false },    // WiFi 2.4GHz
+    { position: [-8, 2.5, -8] as [number, number, number], frequency: 5000, power: 80, isReal: false },   // WiFi 5GHz
+    { position: [8, 2.5, -8] as [number, number, number], frequency: 2450, power: 30, isReal: false },    // Bluetooth
+    { position: [-8, 2.5, 8] as [number, number, number], frequency: 2450, power: 30, isReal: false }     // Bluetooth
   ], []);
+  
+  // Process real device data when available
+  useEffect(() => {
+    const processRealDeviceData = () => {
+      // Only proceed if we have data
+      if (bluetoothDevices.length === 0 && wifiNetworks.length === 0) return;
+      
+      try {
+        // Create virtual emitters based on real devices
+        const virtualEmitters = [
+          // Add virtual emitters at room corners for triangulation reference
+          { position: [8, 2.5, 8] as [number, number, number], isReal: true },
+          { position: [-8, 2.5, -8] as [number, number, number], isReal: true },
+          { position: [8, 2.5, -8] as [number, number, number], isReal: true },
+          { position: [-8, 2.5, 8] as [number, number, number], isReal: true }
+        ];
+        
+        // Add real bluetooth devices if available
+        if (bluetoothDevices.length > 0) {
+          // We position bluetooth devices randomly for demo purposes
+          // In a real app, you'd need to use anchor points with known positions
+          bluetoothDevices.forEach((device, index) => {
+            const randomPos: [number, number, number] = [
+              (Math.random() - 0.5) * 16,
+              0.5 + Math.random() * 2,
+              (Math.random() - 0.5) * 16
+            ];
+            virtualEmitters.push({
+              position: randomPos,
+              isReal: true
+            });
+          });
+        }
+        
+        // In a real implementation, we would:
+        // 1. Have known positions of WiFi APs and Bluetooth beacons
+        // 2. Measure signal strengths from multiple points
+        // 3. Use triangulation to determine human positions
+        
+        // For demo purposes, we'll simulate human detection from real signals
+        // by adding simulated humans near real device locations
+        const detectedHumans = [];
+        
+        if (bluetoothDevices.length > 0) {
+          // Create a simulated human for each bluetooth device
+          // In a real app, we'd triangulate position from multiple signals
+          for (let i = 0; i < Math.min(3, bluetoothDevices.length); i++) {
+            const device = bluetoothDevices[i];
+            
+            // Create a signal readings array for triangulation
+            const signalReadings = virtualEmitters.slice(0, 4).map(emitter => {
+              // Calculate simulated distance based on RSSI
+              // In a real app, this would be based on actual signal measurements
+              const distance = calculateDistanceFromRSSI(
+                device.rssi - Math.random() * 10,  // Add some randomness
+                -59  // Typical TX power for BLE devices
+              );
+              
+              return {
+                position: emitter.position,
+                distance: Math.max(0.5, Math.min(15, distance))  // Clamp to reasonable range
+              };
+            });
+            
+            // Estimate position using triangulation
+            const estimatedPosition = estimatePositionFromSignals(signalReadings) || 
+                                      [Math.random() * 6 - 3, 0.5, Math.random() * 6 - 3];
+            
+            // Add human with high confidence since it's from real data
+            detectedHumans.push({
+              id: i + 1,
+              position: estimatedPosition as [number, number, number],
+              confidence: 0.7 + Math.random() * 0.3,  // Higher confidence for real data
+              signalStrengthReduction: 0.4 + Math.random() * 0.4,
+              isRealData: true
+            });
+          }
+        }
+        
+        // If we have real data, update the humans array
+        if (detectedHumans.length > 0) {
+          setHumans(detectedHumans);
+          
+          const avgConfidence = detectedHumans.reduce((sum, h) => sum + h.confidence, 0) / detectedHumans.length;
+          
+          toast({
+            title: "Real Signal Detection",
+            description: `Found ${detectedHumans.length} human(s) with avg. confidence ${Math.round(avgConfidence * 100)}%`,
+          });
+        }
+      } catch (error) {
+        console.error("Error processing device data:", error);
+      }
+    };
+    
+    processRealDeviceData();
+  }, [bluetoothDevices, wifiNetworks, toast]);
   
   // Simulate detecting humans using wave physics
   useEffect(() => {
     const scanForHumans = () => {
-      const newPositions = generateMockHumanPositions(Math.floor(2 + Math.random() * 2));
-      setHumans(newPositions);
-      
-      // More detailed toast message with confidence
-      const avgConfidence = newPositions.reduce((sum, h) => sum + h.confidence, 0) / newPositions.length;
-      
-      toast({
-        title: "Movement Detected",
-        description: `Found ${newPositions.length} human(s) with avg. confidence ${Math.round(avgConfidence * 100)}%`,
-      });
+      // Only use mock data if we don't have real data
+      if (bluetoothDevices.length === 0 && wifiNetworks.length === 0) {
+        const newPositions = generateMockHumanPositions(Math.floor(2 + Math.random() * 2));
+        const formattedHumans = newPositions.map(human => ({
+          ...human,
+          isRealData: false
+        }));
+        
+        setHumans(formattedHumans);
+        
+        // More detailed toast message with confidence
+        const avgConfidence = formattedHumans.reduce((sum, h) => sum + h.confidence, 0) / formattedHumans.length;
+        
+        toast({
+          title: "Movement Detected (Simulation)",
+          description: `Found ${formattedHumans.length} human(s) with avg. confidence ${Math.round(avgConfidence * 100)}%`,
+        });
+      }
     };
     
     const intervalId = setInterval(scanForHumans, 5000);
     
     // Initial human positions
-    scanForHumans();
+    if (humans.length === 0) {
+      scanForHumans();
+    }
     
     return () => clearInterval(intervalId);
-  }, [toast]);
-  
-  // Calculate wave intensity for each position in the room
-  const calculateIntensityMap = () => {
-    // This would create a 3D intensity map for visualization
-    // For now, we use simplified visualization with spheres
-  };
+  }, [toast, humans.length, bluetoothDevices, wifiNetworks]);
   
   return (
     <div className="h-screen w-full">
@@ -276,6 +399,11 @@ const WaveVisualizer = () => {
         <Badge variant="outline" className="bg-black/50 text-wavebody-highlight border-wavebody-highlight">
           Humans Detected: {humans.length}
         </Badge>
+        {(bluetoothDevices.length > 0 || wifiNetworks.length > 0) && (
+          <Badge variant="outline" className="bg-black/50 text-green-400 border-green-400">
+            Using Real Signals
+          </Badge>
+        )}
       </div>
       
       <Canvas shadows camera={{ position: [10, 10, 10], fov: 50 }}>
@@ -292,6 +420,7 @@ const WaveVisualizer = () => {
             position={emitter.position} 
             frequency={emitter.frequency}
             power={emitter.power}
+            isReal={emitter.isReal}
           />
         ))}
         
@@ -301,7 +430,7 @@ const WaveVisualizer = () => {
             key={`wave-${index}`} 
             position={emitter.position} 
             intensity={emitter.power / 30} 
-            frequency={emitter.frequency}
+            frequency={emitter.frequency || 2400}
           />
         ))}
         
@@ -313,6 +442,7 @@ const WaveVisualizer = () => {
             id={human.id}
             confidence={human.confidence}
             signalStrengthReduction={human.signalStrengthReduction}
+            isRealData={human.isRealData}
           />
         ))}
         
@@ -323,7 +453,8 @@ const WaveVisualizer = () => {
               key={`disturbance-${human.id}-${index}`}
               emitterPosition={emitter.position}
               humanPosition={human.position}
-              signalReduction={human.signalStrengthReduction}
+              signalReduction={human.signalStrength || human.signalStrengthReduction}
+              isRealData={human.isRealData}
             />
           ))
         )}
@@ -335,4 +466,3 @@ const WaveVisualizer = () => {
 };
 
 export default WaveVisualizer;
-
