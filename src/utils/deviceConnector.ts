@@ -1,8 +1,7 @@
-
 // API support flags
 export const browserSupport = {
-  bluetooth: 'bluetooth' in navigator,
-  wifi: 'connection' in navigator && 'type' in (navigator as any).connection
+  bluetooth: 'bluetooth' in navigator || typeof window.electronAPI !== 'undefined',
+  wifi: ('connection' in navigator && 'type' in (navigator as any).connection) || typeof window.electronAPI !== 'undefined'
 };
 
 // Bluetooth device connection and scanning
@@ -12,6 +11,7 @@ export interface BluetoothSignalReading {
   rssi: number; // Signal strength
   manufacturerData?: Map<number, DataView>;
   serviceData?: Map<string, DataView>;
+  timestamp?: number;
 }
 
 export interface WiFiNetwork {
@@ -22,9 +22,26 @@ export interface WiFiNetwork {
   timestamp: number;
 }
 
+// Check if we're running in Electron
+const isElectron = () => {
+  return typeof window !== 'undefined' && typeof window.electronAPI !== 'undefined';
+};
+
 // Get Bluetooth devices and their signal strengths
 export async function scanBluetoothDevices(): Promise<BluetoothSignalReading[]> {
-  if (!browserSupport.bluetooth) {
+  // If we're in Electron, use the Electron API
+  if (isElectron()) {
+    try {
+      const devices = await window.electronAPI.scanBluetooth();
+      return devices;
+    } catch (error) {
+      console.error("Error scanning Bluetooth devices via Electron:", error);
+      return [];
+    }
+  }
+  
+  // Otherwise use the browser API if available
+  if (!browserSupport.bluetooth || !('bluetooth' in navigator)) {
     console.warn("Bluetooth API not supported in this browser");
     return [];
   }
@@ -46,7 +63,8 @@ export async function scanBluetoothDevices(): Promise<BluetoothSignalReading[]> 
         name: event.device.name,
         rssi: event.rssi,
         manufacturerData: event.manufacturerData,
-        serviceData: event.serviceData
+        serviceData: event.serviceData,
+        timestamp: Date.now()
       });
     });
     
@@ -64,9 +82,19 @@ export async function scanBluetoothDevices(): Promise<BluetoothSignalReading[]> 
 }
 
 // Get WiFi networks information
-// Note: Most browsers don't expose WiFi networks due to privacy concerns
-// This is a placeholder that will work on some Android devices with special permissions
 export async function getWiFiNetworks(): Promise<WiFiNetwork[]> {
+  // If we're in Electron, use the Electron API
+  if (isElectron()) {
+    try {
+      const networks = await window.electronAPI.scanWifi();
+      return networks;
+    } catch (error) {
+      console.error("Error getting WiFi networks via Electron:", error);
+      return [];
+    }
+  }
+  
+  // Otherwise use the browser API if available
   if (!(navigator as any).getNetworkInformation) {
     console.warn("WiFi API not supported in this browser");
     return [];
@@ -77,8 +105,8 @@ export async function getWiFiNetworks(): Promise<WiFiNetwork[]> {
     return networks.map((network: any) => ({
       bssid: network.bssid,
       ssid: network.ssid,
-      frequency: network.frequency,
-      signalStrength: network.signalStrength,
+      frequency: network.frequency || network.channel,
+      signalStrength: network.signal_level || network.quality,
       timestamp: Date.now()
     }));
   } catch (error) {

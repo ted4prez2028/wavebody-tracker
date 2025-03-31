@@ -247,7 +247,7 @@ const WaveVisualizer = () => {
   
   const [showSignalPaths, setShowSignalPaths] = useState(true);
   const { toast } = useToast();
-  const { bluetoothDevices, wifiNetworks, supportedFeatures } = useDeviceScanner();
+  const { bluetoothDevices, wifiNetworks, supportedFeatures, startScan } = useDeviceScanner();
   
   // Define emitter positions and properties
   const emitters = useMemo(() => [
@@ -453,7 +453,7 @@ const WaveVisualizer = () => {
               key={`disturbance-${human.id}-${index}`}
               emitterPosition={emitter.position}
               humanPosition={human.position}
-              signalReduction={human.signalStrength || human.signalStrengthReduction}
+              signalReduction={human.signalStrengthReduction}
               isRealData={human.isRealData}
             />
           ))
